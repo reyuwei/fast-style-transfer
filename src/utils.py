@@ -32,3 +32,14 @@ def list_files(in_path):
         break
 
     return files
+
+def list_files_wikiart(in_path):
+    files = []
+    for (dirpath, dirnames, filenames) in os.walk(in_path):
+        if len(filenames) > 0:
+            files.extend([os.path.join(dirpath, f) for f in filenames])
+        # break
+    
+    # print(files)
+
+    return files

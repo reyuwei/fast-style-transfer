@@ -17,6 +17,10 @@ import moviepy.video.io.ffmpeg_writer as ffmpeg_writer
 BATCH_SIZE = 4
 DEVICE = '/gpu:0'
 
+# physical_devices = tf.config.experimental.list_physical_devices('GPU')
+# assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
+# tf.config.experimental.set_memory_growth(physical_devices[0], True)
+
 
 def ffwd_video(path_in, path_out, checkpoint_dir, device_t='/gpu:0', batch_size=4):
     video_clip = VideoFileClip(path_in, audio=False)
@@ -91,15 +95,18 @@ def ffwd(data_in, paths_out, checkpoint_dir, device_t='/gpu:0', batch_size=4):
                                          name='img_placeholder')
 
         preds = transform.net(img_placeholder)
-        saver = tf.compat.v1.train.Saver()
-        if os.path.isdir(checkpoint_dir):
-            ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
-            if ckpt and ckpt.model_checkpoint_path:
-                saver.restore(sess, ckpt.model_checkpoint_path)
-            else:
-                raise Exception("No checkpoint found...")
-        else:
-            saver.restore(sess, checkpoint_dir)
+        # saver = tf.compat.v1.train.Saver()
+        saver = tf.compat.v1.train.import_meta_graph(checkpoint_dir + ".meta")
+        saver.restore(sess, checkpoint_dir)
+
+        # if os.path.isdir(checkpoint_dir):
+        #     ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
+        #     if ckpt and ckpt.model_checkpoint_path:
+        #         saver.restore(sess, ckpt.model_checkpoint_path)
+        #     else:
+        #         raise Exception("No checkpoint found...")
+        # else:
+        #     saver.restore(sess, checkpoint_dir)
 
         num_iters = int(len(paths_out)/batch_size)
         for i in range(num_iters):
@@ -177,11 +184,13 @@ def build_parser():
     return parser
 
 def check_opts(opts):
-    exists(opts.checkpoint_dir, 'Checkpoint not found!')
+    # exists(opts.checkpoint_dir, 'Checkpoint not found!')
     exists(opts.in_path, 'In path not found!')
     if os.path.isdir(opts.out_path):
         exists(opts.out_path, 'out dir not found!')
         assert opts.batch_size > 0
+    else:
+        os.makedirs(opts.out_path)
 
 def main():
     parser = build_parser()

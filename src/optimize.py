@@ -4,18 +4,26 @@ import vgg, pdb, time
 import tensorflow as tf, numpy as np, os
 import transform
 from utils import get_img
+from tqdm import tqdm
 
 STYLE_LAYERS = ('relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1')
 CONTENT_LAYER = 'relu4_2'
 DEVICES = 'CUDA_VISIBLE_DEVICES'
+DEVICE = '/gpu:0'
+
+# physical_devices = tf.config.experimental.list_physical_devices('GPU')
+# assert len(physical_devices) > 0, "Not enough GPU hardware devices available"
+# tf.config.experimental.set_memory_growth(physical_devices[0], True)
+
 
 # np arr, np arr
 def optimize(content_targets, style_target, content_weight, style_weight,
-             tv_weight, vgg_path, epochs=2, print_iterations=1000,
+             tv_weight, vgg_path, epochs=2, print_iterations=1,
              batch_size=4, save_path='saver/fns.ckpt', slow=False,
-             learning_rate=1e-3, debug=False):
+             learning_rate=1e-3, debug=False, device_t='/gpu:0', checkpoint_dir='saver'):
     if slow:
         batch_size = 1
+    print("Train dataset size", len(content_targets))
     mod = len(content_targets) % batch_size
     if mod > 0:
         print("Train set has been trimmed slightly..")
@@ -40,6 +48,7 @@ def optimize(content_targets, style_target, content_weight, style_weight,
             style_features[layer] = gram
 
     with tf.Graph().as_default(), tf.compat.v1.Session() as sess:
+
         X_content = tf.compat.v1.placeholder(tf.float32, shape=batch_shape, name="X_content")
         X_pre = vgg.preprocess(X_content)
 
@@ -87,55 +96,73 @@ def optimize(content_targets, style_target, content_weight, style_weight,
 
         loss = content_loss + style_loss + tv_loss
 
-        # overall loss
-        train_step = tf.compat.v1.train.AdamOptimizer(learning_rate).minimize(loss)
-        sess.run(tf.compat.v1.global_variables_initializer())
-        import random
-        uid = random.randint(1, 100)
-        print("UID: %s" % uid)
-        for epoch in range(epochs):
-            num_examples = len(content_targets)
-            iterations = 0
-            while iterations * batch_size < num_examples:
-                start_time = time.time()
-                curr = iterations * batch_size
-                step = curr + batch_size
-                X_batch = np.zeros(batch_shape, dtype=np.float32)
-                for j, img_p in enumerate(content_targets[curr:step]):
-                   X_batch[j] = get_img(img_p, (256,256,3)).astype(np.float32)
+        with tf.Graph().device(device_t):
 
-                iterations += 1
-                assert X_batch.shape[0] == batch_size
+            saver = tf.compat.v1.train.Saver()
+            if os.path.isdir(save_path):
+                ckpt = tf.train.get_checkpoint_state(save_path)
+                if ckpt and ckpt.model_checkpoint_path:
+                    saver.restore(sess, ckpt.model_checkpoint_path)
+                else:
+                    raise Exception("No checkpoint found...")
+            else:
+                if os.path.exists(save_path):
+                    saver.restore(sess, save_path)
 
-                feed_dict = {
-                   X_content:X_batch
-                }
+            # overall loss
+            train_step = tf.compat.v1.train.AdamOptimizer(learning_rate).minimize(loss)
+            sess.run(tf.compat.v1.global_variables_initializer())
+            import random
+            uid = random.randint(1, 100)
+            print("UID: %s" % uid)
+            # for epoch in range(epochs):
+            pbar = tqdm(range(epochs))
+            for epoch in pbar:
+                num_examples = len(content_targets)
+                iterations = 0
+                while iterations * batch_size < num_examples:
+                    start_time = time.time()
+                    curr = iterations * batch_size
+                    step = curr + batch_size
+                    X_batch = np.zeros(batch_shape, dtype=np.float32)
+                    for j, img_p in enumerate(content_targets[curr:step]):
+                        X_batch[j] = get_img(img_p, (256,256,3)).astype(np.float32)
 
-                train_step.run(feed_dict=feed_dict)
-                end_time = time.time()
-                delta_time = end_time - start_time
-                if debug:
-                    print("UID: %s, batch time: %s" % (uid, delta_time))
-                is_print_iter = int(iterations) % print_iterations == 0
-                if slow:
-                    is_print_iter = epoch % print_iterations == 0
-                is_last = epoch == epochs - 1 and iterations * batch_size >= num_examples
-                should_print = is_print_iter or is_last
-                if should_print:
-                    to_get = [style_loss, content_loss, tv_loss, loss, preds]
-                    test_feed_dict = {
-                       X_content:X_batch
+                    iterations += 1
+                    assert X_batch.shape[0] == batch_size
+
+                    feed_dict = {
+                    X_content:X_batch
                     }
 
-                    tup = sess.run(to_get, feed_dict = test_feed_dict)
-                    _style_loss,_content_loss,_tv_loss,_loss,_preds = tup
-                    losses = (_style_loss, _content_loss, _tv_loss, _loss)
+                    train_step.run(feed_dict=feed_dict)
+                    end_time = time.time()
+                    delta_time = end_time - start_time
+                    pbar.set_description("%d/%d [time] %.2f" % (curr, num_examples, delta_time))
+                    if debug:
+                        print("UID: %s, batch time: %s" % (uid, delta_time))
+                    is_print_iter = int(iterations) % print_iterations == 0
                     if slow:
-                       _preds = vgg.unprocess(_preds)
-                    else:
-                       saver = tf.compat.v1.train.Saver()
-                       res = saver.save(sess, save_path)
-                    yield(_preds, losses, iterations, epoch)
+                        is_print_iter = epoch % print_iterations == 0
+                    is_last = epoch == epochs - 1 and iterations * batch_size >= num_examples
+                    should_print = is_print_iter or is_last
+                    if should_print:
+                        to_get = [style_loss, content_loss, tv_loss, loss, preds]
+                        test_feed_dict = {
+                        X_content:X_batch
+                        }
+
+                        tup = sess.run(to_get, feed_dict = test_feed_dict)
+                        _style_loss,_content_loss,_tv_loss,_loss,_preds = tup
+                        losses = (_style_loss, _content_loss, _tv_loss, _loss)
+                        if slow:
+                            _preds = vgg.unprocess(_preds)
+                        else:
+                            with tf.device('/cpu:0'):
+                                saver = tf.compat.v1.train.Saver()
+                                # print(save_path)
+                                res = saver.save(sess, save_path)
+                                yield(_preds, losses, iterations, epoch)
 
 def _tensor_size(tensor):
     from operator import mul
